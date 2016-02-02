@@ -81,11 +81,17 @@ class Watcher(object):
     def watch(self, netid, prefix):
         logging.info('Initial scan of %s/%s ...' % (netid, prefix))
 
-        options = ['-sn', '--min-hostgroup 10', '--min-parallelism 10']
-        options.append('--max-rtt-timeout %sms' % self._timeout)
+        options = ['-sn',
+                   '-n',
+                   '-T5',
+                   '--max-parallelism=100']
+
+        options.append('--host-timeout %sms' % self._timeout)
 
         args = ' '.join(options)
         hosts = '%s/%s' % (netid, prefix)
+
+        print(args)
 
         nm = nmap.PortScannerAsync()
         self._nms.append(nm)
@@ -112,23 +118,27 @@ class Watcher(object):
 
     def _waitForScans(self):
         for entry in self._nms:
-            print('Wait for %r' % entry)
             entry.wait()
-            print('Wait finished')
 
     def _enqueueFoundHost(self, host, result):
         if host == self._scanningHost:
             return
         try:
-            if int(host.rpartition('.')[-1]) in self._excludes \
-                    or not result['scan']:
-                logging.debug('%s skipped' % host)
+
+            if int(host.rpartition('.')[-1]) in self._excludes:
+                logging.debug('%s excluded' % host)
+                return
+
+            if not result['scan']:
+                logging.debug('%s offline' % host)
                 return
 
             mac = result['scan'][host]['addresses']['mac']
             self._hostQueue.put('%s#%s' % (host, mac))
+        except KeyError:
+            logging.warning('Cannot determine mac address for %s' % host)
         except Exception as e:
-            logging.warning('Cannot enqueue host %s (%s)' % (host, e))
+            logging.exception(e)
 
     def _handleHost(self, host, mac):
         if host in self._hosts:
@@ -218,23 +228,48 @@ def parseArgv(argv):
                         action='store_true',
                         help='Verbose logging',
                         default=False)
-    parser.add_argument('-w', '--watch-new',
-                        action='store_true',
-                        help='Watch new hosts',
+    parser.add_argument('-e', '--exclude',
+                        nargs='+',
+                        help='Excluded ip addresses',
+                        default=[0,255])
+    parser.add_argument('-d', '--dnssrvs',
+                        nargs='+',
+                        help='Dns servers to use',
+                        default=[])
+    parser.add_argument('-t', '--timeout',
+                        type=str,
+                        help='Timeout in ms for network requests',
+                        default=100)
+    parser.add_argument('-r', '--retries',
+                        type=int,
+                        help='Retries for network requests',
+                        default=1)
+    parser.add_argument('-p', '--ports',
+                        nargs='+',
+                        help='Ports to scan',
+                        default=['22', '23', '42', '137', '80', '502', '7000', '48898'])
+    parser.add_argument('netid',
+                        type=str,
+                        help='Network to watch (format netid/prefix)',
                         default=False)
     return parser.parse_args(argv)
 
 
 def main(argv):
-    global _newOnly
     args = parseArgv(argv[1:])
 
     logLevel = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=logLevel,
                         format='[%(asctime)-15s][%(levelname)s]: %(message)s')
 
-    w = Watcher(excludes=EXCLUDED, dnssrvs=DNS_SRVS, timeout=TIMEOUT, retries=RETRIES, ports=SCANPORTS)
-    w.watch('192.168.0.0', 24)
+    w = Watcher(excludes=args.exclude,
+                dnssrvs=args.dnssrvs,
+                timeout=args.timeout,
+                retries=args.retries,
+                ports=args.ports)
+
+    netid, prefix = args.netid.split('/')
+    w.watch(netid, prefix)
 
 
 
